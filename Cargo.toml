@@ -1,6 +1,18 @@
 [package]
 name = "egui-theme-boomer"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
+description = "Windows 95 (Silver) and NeXT Night themes for egui, ported from BevelDesk — zero-effort skin plus opt-in taskbar, desktop, windowing, and pixel-exact widgets"
+license = "MIT"
+readme = "README.md"
+keywords = ["egui", "theme", "retro", "windows95", "gui"]
+categories = ["gui"]
+exclude = ["assets/*.png"]
 
 [dependencies]
+egui = "0.35"
+
+[dev-dependencies]
+chrono = "0.4.45"
+eframe = "0.35"
+image = { version = "0.25.10", default-features = false, features = ["png"] }
