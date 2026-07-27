@@ -89,6 +89,9 @@ changes:
 
 - `ui.button(…)` is a raised push button whose contents shift +1,+1 while
   pressed — verified pixel-identical to real Win95 screenshots
+- selected stock buttons (`ui.selectable_label(true, …)`) stay physically
+  depressed like checked Win95 push-like controls; selected menu and combo
+  rows remain flat navy highlights
 - `ui.checkbox(…)` is a 13px sunken field with the classic pixel check
 - `ui.radio_value(…)` gets the sunken two-tone ring
 - `egui::ComboBox` becomes a sunken field with a beveled arrow button
@@ -103,6 +106,8 @@ changes:
   `ui.group()` becomes an etched groove box
 - `egui::ScrollArea` bars get the raised beveled thumb on the pale track
 - tooltips are the flat pale-yellow box with the black keyline
+- large dark canvas rectangles used by scopes, plots, and previews become
+  square sunken display wells, with their contents clipped inside the bevel
 
 | Silver | NeXT Night |
 |---|---|

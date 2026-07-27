@@ -106,6 +106,7 @@ fn first_existing(paths: &[&str]) -> Option<Vec<u8>> {
 /// keeps egui's bundled fonts and only registers the bold-family fallback.
 pub fn install_fonts(ctx: &Context) {
     let mut fonts = egui::FontDefinitions::default();
+    #[allow(unused_mut)]
     let mut bold_real = false;
 
     #[cfg(not(target_arch = "wasm32"))]

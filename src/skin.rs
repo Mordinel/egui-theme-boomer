@@ -8,12 +8,16 @@
 //!
 //! - face-colored marked rects → raised / pressed button bevels, and the
 //!   button's contents (label, icons) shift +1,+1 while pressed, like Win95
+//! - selected stock buttons → latched pressed bevels; menu selections remain
+//!   flat navy rows
 //! - field-colored marked rects → sunken fields (text edits stay sunken
 //!   when focused; check boxes get the classic pixel check mark)
 //! - marked circles → the sunken-ring radio button
 //! - combo boxes → sunken field + beveled arrow button
 //! - progress bars → sunken trough + segmented selection-colored blocks
 //! - sliders → sunken channel + raised trackbar thumb
+//! - large dark rounded canvases → square sunken display wells, with their
+//!   plots/previews clipped inside the client edge
 //!
 //! So a plain `ui.button("OK")`, `ui.checkbox(…)`, `egui::ComboBox`,
 //! `egui::ProgressBar`, or `egui::Slider` renders the exact Win95 control
@@ -147,6 +151,10 @@ enum Action {
     WhiteText,
     /// Content of a pressed button: shift +1,+1.
     Shift,
+    /// Text of a latched button: restore normal button text and shift +1,+1.
+    PressedText,
+    /// Keep custom display contents inside the recessed client edge.
+    InsetClip(Rect),
 }
 
 fn mark_of(stroke: Stroke) -> Option<bevel::Kind> {
@@ -164,6 +172,32 @@ fn pill_radius(cr: CornerRadius, height: f32) -> bool {
     cr.nw >= half.saturating_sub(1) && cr.nw != 0
 }
 
+/// A raw, dark canvas painted by an app. These are the usual shape of plots,
+/// scopes, previews, and other display surfaces. The size and luminance guards
+/// keep small decorative rounded rects out of the widget-chrome pass.
+fn is_display_surface(rs: &egui::epaint::RectShape) -> bool {
+    let rect = rs.rect;
+    rs.stroke == Stroke::NONE
+        && rs.corner_radius != CornerRadius::ZERO
+        && rect.width() >= 40.0
+        && rect.height() >= 40.0
+        && rs.fill.a() >= 96
+        && rs.fill.r() <= 20
+        && rs.fill.g() <= 20
+        && rs.fill.b() <= 20
+}
+
+fn has_selected_button_text(shapes: &[&Shape], i: usize, rect: Rect) -> bool {
+    shapes.iter().skip(i + 1).take(12).any(|shape| {
+        let Shape::Text(ts) = shape else {
+            return false;
+        };
+        rect.contains_rect(shape.visual_bounding_rect())
+            && (ts.fallback_color == MARK_FOCUS
+                || ts.override_text_color == Some(MARK_FOCUS))
+    })
+}
+
 fn classify<'a>(
     entries: impl Iterator<Item = &'a ClippedShape>,
     pal: &Palette,
@@ -174,6 +208,8 @@ fn classify<'a>(
     let mut actions: Vec<(usize, Action)> = Vec::new();
     let mut claimed: Vec<usize> = Vec::new();
     let mut pressed_rects: Vec<Rect> = Vec::new();
+    let mut selected_pressed_rects: Vec<Rect> = Vec::new();
+    let mut display_wells: Vec<(usize, Rect)> = Vec::new();
     let mut menu_rows: Vec<Rect> = Vec::new();
     let mut pending_check: Option<(Rect, usize)> = None;
     let mut last_rail: Option<Rect> = None;
@@ -204,6 +240,21 @@ fn classify<'a>(
                         actions.push((i, Action::ComboField { pressed: true }));
                         actions.push((j, Action::ComboArrow { btn: combo_btn(rect), pressed: true }));
                         claimed.push(j);
+                    } else if rs.stroke.color == MARK_RAISED
+                        || (rs.stroke.color == MARK_PRESSED
+                            && has_selected_button_text(&shapes, i, rect))
+                    {
+                        // A selected stock Button is Win32's BS_PUSHLIKE
+                        // checked state: it stays physically depressed. Menu
+                        // and combo rows have no stroke because egui applies
+                        // `menu_style`, so they still take the flat-selection
+                        // branch below.
+                        actions.push((
+                            i,
+                            Action::Bevel(bevel::Kind::Pressed, pal.face),
+                        ));
+                        pressed_rects.push(rect);
+                        selected_pressed_rects.push(rect);
                     } else {
                         actions.push((i, Action::Flatten));
                         menu_rows.push(rect);
@@ -212,6 +263,11 @@ fn classify<'a>(
                 }
                 if rs.stroke.color == MARK_ETCH {
                     actions.push((i, Action::EtchRect));
+                    continue;
+                }
+                if is_display_surface(rs) {
+                    actions.push((i, Action::Bevel(bevel::Kind::Sunken, rs.fill)));
+                    display_wells.push((i, rect.shrink(2.0)));
                     continue;
                 }
                 // Window / popup / tooltip frames.
@@ -351,6 +407,11 @@ fn classify<'a>(
                 let bounds = shape.visual_bounding_rect();
                 if menu_rows.iter().any(|r| r.contains_rect(bounds)) {
                     actions.push((i, Action::WhiteText));
+                } else if selected_pressed_rects
+                    .iter()
+                    .any(|pr| pr.contains_rect(bounds))
+                {
+                    actions.push((i, Action::PressedText));
                 } else if pressed_rects.iter().any(|pr| pr.contains_rect(bounds)) {
                     actions.push((i, Action::Shift));
                 }
@@ -366,6 +427,20 @@ fn classify<'a>(
             }
         }
     }
+
+    // A recessed display's client edge must win over plot lines/bars that
+    // were deliberately drawn all the way to the original rounded rect.
+    // Tighten their existing clip rather than translating or rescaling data.
+    for (well_idx, inner) in display_wells {
+        let outer = inner.expand(4.0);
+        for (i, shape) in shapes.iter().enumerate().skip(well_idx + 1) {
+            let bounds = shape.visual_bounding_rect();
+            if bounds.is_finite() && outer.contains_rect(bounds) {
+                actions.push((i, Action::InsetClip(inner)));
+            }
+        }
+    }
+
     actions
 }
 
@@ -565,5 +640,100 @@ fn apply(clipped: &mut ClippedShape, action: &Action, pal: &Palette) {
             }
         }
         Action::Shift => shape.translate(vec2(1.0, 1.0)),
+        Action::PressedText => {
+            if let Shape::Text(ts) = shape {
+                ts.override_text_color = Some(pal.text);
+            }
+            shape.translate(vec2(1.0, 1.0));
+        }
+        Action::InsetClip(rect) => {
+            clipped.clip_rect = clipped.clip_rect.intersect(*rect);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui::epaint::{RectShape, StrokeKind};
+
+    fn clipped(shape: Shape) -> ClippedShape {
+        ClippedShape {
+            clip_rect: Rect::EVERYTHING,
+            shape,
+        }
+    }
+
+    fn selected_rect(stroke: Stroke) -> Shape {
+        Shape::Rect(RectShape::new(
+            Rect::from_min_size(pos2(0.0, 0.0), vec2(70.0, 22.0)),
+            CornerRadius::ZERO,
+            crate::palette::SILVER.sel,
+            stroke,
+            StrokeKind::Inside,
+        ))
+    }
+
+    #[test]
+    fn selected_stock_button_becomes_persistently_pressed() {
+        let entries = [clipped(selected_rect(Stroke::new(1.0, MARK_RAISED)))];
+        let actions = classify(
+            entries.iter(),
+            &crate::palette::SILVER,
+            None,
+            egui::Order::Middle,
+        );
+
+        assert!(actions.iter().any(|(_, action)| matches!(
+            action,
+            Action::Bevel(bevel::Kind::Pressed, fill)
+                if *fill == crate::palette::SILVER.face
+        )));
+    }
+
+    #[test]
+    fn selected_menu_row_stays_a_flat_selection() {
+        let entries = [clipped(selected_rect(Stroke::NONE))];
+        let actions = classify(
+            entries.iter(),
+            &crate::palette::SILVER,
+            None,
+            egui::Order::Foreground,
+        );
+
+        assert!(
+            actions
+                .iter()
+                .any(|(_, action)| matches!(action, Action::Flatten))
+        );
+    }
+
+    #[test]
+    fn rounded_dark_canvas_becomes_a_clipped_sunken_well() {
+        let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(160.0, 90.0));
+        let entries = [
+            clipped(Shape::rect_filled(
+                rect,
+                CornerRadius::same(4),
+                Color32::from_black_alpha(140),
+            )),
+            clipped(Shape::line_segment(
+                [rect.left_center(), rect.right_center()],
+                Stroke::new(1.0, Color32::WHITE),
+            )),
+        ];
+        let actions = classify(
+            entries.iter(),
+            &crate::palette::SILVER,
+            None,
+            egui::Order::Middle,
+        );
+
+        assert!(actions.iter().any(|(i, action)| {
+            *i == 0 && matches!(action, Action::Bevel(bevel::Kind::Sunken, _))
+        }));
+        assert!(actions.iter().any(|(i, action)| {
+            *i == 1 && matches!(action, Action::InsetClip(inner) if *inner == rect.shrink(2.0))
+        }));
     }
 }
